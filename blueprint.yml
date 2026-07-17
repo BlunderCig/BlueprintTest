@@ -12,28 +12,28 @@ blueprint:
   input:
     # Printer Sensors
     printer_state_sensor:
-      name: Printer State Sensor
-      description: The sensor tracking current print state (e.g., printing, complete).
+      name: Printer Current Print State
+      description: Select the Current Print State Sensor (not Printer State).
       selector:
         entity:
           domain: sensor
     printer_spool_id_sensor:
       name: Spool ID Sensor
-      description: The Moonraker sensor tracking the active Spool ID.
+      description: Select the printer's Spool ID Sensor.
       selector:
         entity:
           domain: sensor
     printer_current_print_sensor:
-      name: Current Print Sensor
-      description: The sensor tracking current print job metadata (to extract filename).
+      name: Printer Filename Sensor
+      description: Select the printer's Filename Sensor.
       selector:
         entity:
           domain: sensor
 
     # Smart Plug & Electricity Cost
     smart_plug_energy_sensor:
-      name: Smart Plug Energy Sensor
-      description: The total accumulated energy sensor (kWh) from your smart plug.
+      name: Energy Sensor
+      description: The total accumulated energy sensor (kWh) from your energy monitoring device (eg smart plug).
       selector:
         entity:
           domain: sensor
