@@ -1,0 +1,185 @@
+blueprint:
+  name: "3D Print: Cost & History Tracker (Spoolman + Smart Plug)"
+  description: >
+    Track the exact filament and energy cost of each 3D print. 
+    Bridges Moonraker/Klipper, Spoolman, and any Smart Plug.
+    
+    ⚠️ **SETUP REQUIREMENT:** You must manually create three helpers before configuring this:
+    1. An `input_text` helper to store your printed list.
+    2. An `input_number` helper to store the starting energy snapshot.
+    3. An `input_number` helper to store the starting spool weight snapshot.
+  domain: automation
+  input:
+    # Printer Sensors
+    printer_state_sensor:
+      name: Printer State Sensor
+      description: The sensor tracking current print state (e.g., printing, complete).
+      selector:
+        entity:
+          domain: sensor
+    printer_spool_id_sensor:
+      name: Spool ID Sensor
+      description: The Moonraker sensor tracking the active Spool ID.
+      selector:
+        entity:
+          domain: sensor
+    printer_current_print_sensor:
+      name: Current Print Sensor
+      description: The sensor tracking current print job metadata (to extract filename).
+      selector:
+        entity:
+          domain: sensor
+
+    # Smart Plug & Electricity Cost
+    smart_plug_energy_sensor:
+      name: Smart Plug Energy Sensor
+      description: The total accumulated energy sensor (kWh) from your smart plug.
+      selector:
+        entity:
+          domain: sensor
+    electricity_cost_entity:
+      name: Electricity Cost per kWh
+      description: Select either an input_number helper OR a dynamic sensor entity (e.g., utility rate integration).
+      selector:
+        entity:
+          domain:
+            - input_number
+            - sensor
+
+    # Localization
+    currency_symbol:
+      name: Currency Symbol
+      description: Type the currency symbol you want used in your text log strings (e.g. £, $, €, ¥).
+      default: "£"
+      selector:
+        text:
+
+    # Handshake Helpers
+    helper_print_history:
+      name: History Text Helper
+      description: The input_text helper where the dashboard list is compiled.
+      selector:
+        entity:
+          domain: input_text
+    helper_start_energy:
+      name: Start Energy Helper
+      description: The input_number helper used to temporarily snapshot energy.
+      selector:
+        entity:
+          domain: input_number
+    helper_start_used_weight:
+      name: Start Spool Weight Helper
+      description: The input_number helper used to temporarily snapshot spool weight.
+      selector:
+        entity:
+          domain: input_number
+
+mode: restart
+
+trigger:
+  - platform: state
+    entity_id: !input printer_state_sensor
+    to: "printing"
+    id: "start"
+  - platform: state
+    entity_id: !input printer_state_sensor
+    from: "printing"
+    id: "end"
+
+action:
+  - choose:
+      # ==========================================
+      # SEQUENCE A: PRINT START
+      # ==========================================
+      - conditions:
+          - condition: trigger
+            id: "start"
+        sequence:
+          # Force sync Spoolman to ensure starting weight is 100% fresh
+          - action: homeassistant.update_entity
+            target:
+              entity_id: "sensor.spoolman_spool_{{ states(printer_spool_id_sensor) | int(0) }}_used_weight"
+            data: {}
+          - delay: "00:00:02"
+          
+          # Record Start Energy
+          - action: input_number.set_value
+            target:
+              entity_id: !input helper_start_energy
+            data:
+              value: "{{ states(smart_plug_energy_sensor) | float(0) }}"
+              
+          # Record Start Spool Weight
+          - action: input_number.set_value
+            target:
+              entity_id: !input helper_start_used_weight
+            data:
+              value: >-
+                {% set spool_id = states(printer_spool_id_sensor) | int(0) %}
+                {{ states('sensor.spoolman_spool_' ~ spool_id ~ '_used_weight') | float(0) }}
+
+      # ==========================================
+      # SEQUENCE B: PRINT END
+      # ==========================================
+      - conditions:
+          - condition: trigger
+            id: "end"
+          - condition: template
+            value_template: "{{ trigger.to_state.state in ['complete', 'finished'] }}"
+        sequence:
+          - delay: "00:00:10"
+          
+          # Force sync Spoolman to get the absolute final printed weight
+          - action: homeassistant.update_entity
+            target:
+              entity_id: "sensor.spoolman_spool_{{ states(printer_spool_id_sensor) | int(0) }}_used_weight"
+            data: {}
+              
+          - variables:
+              # Bring blueprint inputs into template scope
+              printer_spool_id_sensor: !input printer_spool_id_sensor
+              printer_current_print_sensor: !input printer_current_print_sensor
+              smart_plug_energy_sensor: !input smart_plug_energy_sensor
+              electricity_cost_entity: !input electricity_cost_entity
+              currency_symbol: !input currency_symbol
+              helper_start_energy: !input helper_start_energy
+              helper_start_used_weight: !input helper_start_used_weight
+
+              # --- ENERGY SNAPSHOT MATH ---
+              start_kwh: "{{ states(helper_start_energy) | float(0) }}"
+              end_kwh: "{{ states(smart_plug_energy_sensor) | float(0) }}"
+              kwh_used: "{{ (end_kwh - start_kwh) | round(3) }}"
+              elec_rate: "{{ states(electricity_cost_entity) | float(0.15) }}"
+              elec_cost: "{{ (kwh_used * elec_rate) | round(2) }}"
+              
+              # --- FILAMENT SNAPSHOT MATH ---
+              active_spool_id: "{{ states(printer_spool_id_sensor) | int(0) }}"
+              start_weight: "{{ states(helper_start_used_weight) | float(0) }}"
+              end_weight: "{{ states('sensor.spoolman_spool_' ~ active_spool_id ~ '_used_weight') | float(0) }}"
+              grams_used: "{{ (end_weight - start_weight) | round(1) }}"
+              
+              # --- COST MATH ---
+              spool_price: "{{ states('sensor.spoolman_spool_' ~ active_spool_id ~ '_price') | float(0) }}"
+              spool_initial_weight: "{{ states('sensor.spoolman_spool_' ~ active_spool_id ~ '_filament_weight') | float(1000) }}"
+              cost_per_gram: "{{ spool_price / (spool_initial_weight if spool_initial_weight > 0 else 1000) }}"
+              
+              filament_cost: "{{ (grams_used * cost_per_gram) | round(2) }}"
+              total_cost: "{{ (elec_cost + filament_cost) | round(2) }}"
+              
+              # --- FORMATTING (Now uses dynamic currency input) ---
+              print_name: "{{ state_attr(printer_current_print_sensor, 'filename') | default('Unknown Print', true) | string }}"
+              new_line: >-
+                {{ now().strftime('%m/%d %H:%M') }} - {{ print_name | truncate(15, true, '...') }} - {{ grams_used }}g ({{ currency_symbol }}{{ total_cost }})
+                
+          # Update the UI History List
+          - action: input_text.set_value
+            target:
+              entity_id: !input helper_print_history
+            data:
+              value: >-
+                {% set current = states(helper_print_history) %}
+                {% if current in ['unknown', 'None', ''] %}
+                  {{ new_line }}
+                {% else %}
+                  {{ ([new_line] + current.split('\n'))[:5] | join('\n') }}
+                {% endif %}
