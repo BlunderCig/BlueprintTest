@@ -3,7 +3,7 @@ blueprint:
   description: |
     Track the exact filament and energy cost of each 3D print using Moonraker/Klipper, Spoolman, and any Energy Monitor.
     
-    ⚠️ **SETUP REQUIREMENT:** You must manually create these helpers via the UI before configuring this:
+    ⚠️ **SETUP REQUIREMENT:** You must setup the Moonraker integration and Spoolman integration (both via HACS) and manually create these helpers via the UI before configuring this:
     1. A 'Local Calendar' integration for your print history.
     2. An `input_number` helper to store the starting energy snapshot.
     3. An `input_number` helper to store the starting spool weight snapshot.
