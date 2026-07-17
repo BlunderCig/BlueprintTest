@@ -1,13 +1,14 @@
 blueprint:
   name: "3D Print: Cost & History Tracker (Spoolman + Smart Plug)"
-  description: >
+  description: |
     Track the exact filament and energy cost of each 3D print. 
     Bridges Moonraker/Klipper, Spoolman, and any Smart Plug.
     
-    ⚠️ **SETUP REQUIREMENT:** You must manually create three helpers before configuring this:
+    ⚠️ **SETUP REQUIREMENT:** You must manually create at least three helpers before configuring this:
     1. An `input_text` helper to store your printed list.
     2. An `input_number` helper to store the starting energy snapshot.
     3. An `input_number` helper to store the starting spool weight snapshot.
+    4. An 'input_number' helper to input your energy cost per kwh if you do not have an integration entity.
   domain: automation
   input:
     # Printer Sensors
