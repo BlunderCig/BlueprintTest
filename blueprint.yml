@@ -1,14 +1,13 @@
 blueprint:
-  name: "3D Print: Cost & History Tracker (Spoolman + Smart Plug)"
+  name: "3D Printing Cost & History Tracker"
   description: |
-    Track the exact filament and energy cost of each 3D print. 
-    Bridges Moonraker/Klipper, Spoolman, and any Smart Plug.
+    Track the exact filament and energy cost of each 3D print using Moonraker/Klipper, Spoolman, and any Energy Monitor.
     
-    ⚠️ **SETUP REQUIREMENT:** You must manually create at least three helpers before configuring this:
-    1. An `input_text` helper to store your printed list.
+    ⚠️ **SETUP REQUIREMENT:** You must manually create these helpers via the UI before configuring this:
+    1. A 'Local Calendar' integration for your print history.
     2. An `input_number` helper to store the starting energy snapshot.
     3. An `input_number` helper to store the starting spool weight snapshot.
-    4. An 'input_number' helper to input your energy cost per kwh if you do not have an integration entity.
+    4. An `input_number` helper to input your energy cost per kwh if you do not have an integration.
   domain: automation
   input:
     # Printer Sensors
@@ -24,17 +23,17 @@ blueprint:
       selector:
         entity:
           domain: sensor
-    printer_current_print_sensor:
+    printer_filename_sensor:
       name: Printer Filename Sensor
       description: Select the printer's Filename Sensor.
       selector:
         entity:
           domain: sensor
 
-    # Smart Plug & Electricity Cost
-    smart_plug_energy_sensor:
-      name: Energy Sensor
-      description: The total accumulated energy sensor (kWh) from your energy monitoring device (eg smart plug).
+    # Energy Monitor & Electricity Cost
+    energy_monitor:
+      name: Energy Monitor
+      description: The total accumulated energy sensor (kWh) from your energy monitoring device.
       selector:
         entity:
           domain: sensor
@@ -55,13 +54,15 @@ blueprint:
       selector:
         text:
 
-    # Handshake Helpers
-    helper_print_history:
-      name: History Text Helper
-      description: The input_text helper where the dashboard list is compiled.
+    # History Storage
+    history_calendar:
+      name: History Calendar
+      description: Select the Local Calendar you created to store your print logs.
       selector:
         entity:
-          domain: input_text
+          domain: calendar
+
+    # Handshake Helpers
     helper_start_energy:
       name: Start Energy Helper
       description: The input_number helper used to temporarily snapshot energy.
@@ -88,6 +89,16 @@ trigger:
     id: "end"
 
 action:
+  # Bring all blueprint inputs into global template scope immediately
+  - variables:
+      printer_spool_id_sensor: !input printer_spool_id_sensor
+      printer_filename_sensor: !input printer_filename_sensor
+      energy_monitor: !input energy_monitor
+      electricity_cost_entity: !input electricity_cost_entity
+      currency_symbol: !input currency_symbol
+      helper_start_energy: !input helper_start_energy
+      helper_start_used_weight: !input helper_start_used_weight
+
   - choose:
       # ==========================================
       # SEQUENCE A: PRINT START
@@ -108,7 +119,7 @@ action:
             target:
               entity_id: !input helper_start_energy
             data:
-              value: "{{ states(smart_plug_energy_sensor) | float(0) }}"
+              value: "{{ states(energy_monitor) | float(0) }}"
               
           # Record Start Spool Weight
           - action: input_number.set_value
@@ -137,50 +148,37 @@ action:
             data: {}
               
           - variables:
-              # Bring blueprint inputs into template scope
-              printer_spool_id_sensor: !input printer_spool_id_sensor
-              printer_current_print_sensor: !input printer_current_print_sensor
-              smart_plug_energy_sensor: !input smart_plug_energy_sensor
-              electricity_cost_entity: !input electricity_cost_entity
-              currency_symbol: !input currency_symbol
-              helper_start_energy: !input helper_start_energy
-              helper_start_used_weight: !input helper_start_used_weight
-
-              # --- ENERGY SNAPSHOT MATH ---
+              # --- ENERGY MATH ---
               start_kwh: "{{ states(helper_start_energy) | float(0) }}"
-              end_kwh: "{{ states(smart_plug_energy_sensor) | float(0) }}"
+              end_kwh: "{{ states(energy_monitor) | float(0) }}"
               kwh_used: "{{ (end_kwh - start_kwh) | round(3) }}"
               elec_rate: "{{ states(electricity_cost_entity) | float(0.15) }}"
               elec_cost: "{{ (kwh_used * elec_rate) | round(2) }}"
               
-              # --- FILAMENT SNAPSHOT MATH ---
+              # --- FILAMENT MATH ---
               active_spool_id: "{{ states(printer_spool_id_sensor) | int(0) }}"
               start_weight: "{{ states(helper_start_used_weight) | float(0) }}"
               end_weight: "{{ states('sensor.spoolman_spool_' ~ active_spool_id ~ '_used_weight') | float(0) }}"
               grams_used: "{{ (end_weight - start_weight) | round(1) }}"
               
-              # --- COST MATH ---
+              # --- TOTAL COST MATH ---
               spool_price: "{{ states('sensor.spoolman_spool_' ~ active_spool_id ~ '_price') | float(0) }}"
               spool_initial_weight: "{{ states('sensor.spoolman_spool_' ~ active_spool_id ~ '_filament_weight') | float(1000) }}"
               cost_per_gram: "{{ spool_price / (spool_initial_weight if spool_initial_weight > 0 else 1000) }}"
-              
               filament_cost: "{{ (grams_used * cost_per_gram) | round(2) }}"
               total_cost: "{{ (elec_cost + filament_cost) | round(2) }}"
               
-              # --- FORMATTING (Now uses dynamic currency input) ---
-              print_name: "{{ state_attr(printer_current_print_sensor, 'filename') | default('Unknown Print', true) | string }}"
-              new_line: >-
-                {{ now().strftime('%m/%d %H:%M') }} - {{ print_name | truncate(15, true, '...') }} - {{ grams_used }}g ({{ currency_symbol }}{{ total_cost }})
-                
-          # Update the UI History List
-          - action: input_text.set_value
+              print_name: "{{ state_attr(printer_filename_sensor, 'filename') | default('Unknown Print', true) | string }}"
+
+          # Log directly as a calendar event
+          - action: calendar.create_event
             target:
-              entity_id: !input helper_print_history
+              entity_id: !input history_calendar
             data:
-              value: >-
-                {% set current = states(helper_print_history) %}
-                {% if current in ['unknown', 'None', ''] %}
-                  {{ new_line }}
-                {% else %}
-                  {{ ([new_line] + current.split('\n'))[:5] | join('\n') }}
-                {% endif %}
+              summary: "{{ print_name }} ({{ currency_symbol }}{{ total_cost }})"
+              description: >-
+                Filament Used: {{ grams_used }}g ({{ currency_symbol }}{{ filament_cost }})
+                Power Consumed: {{ kwh_used }} kWh ({{ currency_symbol }}{{ elec_cost }})
+                Spool ID Used: #{{ active_spool_id }}
+              start_date_time: "{{ now() }}"
+              end_date_time: "{{ now() + timedelta(minutes=5) }}"
