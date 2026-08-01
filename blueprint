@@ -105,7 +105,9 @@ action:
             target:
               entity_id: "sensor.spoolman_spool_{{ states(printer_spool_id_sensor) | int(0) }}_used_weight"
             data: {}
-          - delay: "00:00:02"
+            
+          # Wait 5 seconds to ensure Klipper/Moonraker has published the filename state
+          - delay: "00:00:05"
           
           # Bundle all 4 start snapshots into a JSON string inside 1 helper
           - action: input_text.set_value
@@ -116,8 +118,13 @@ action:
                 {% set spool_id = states(printer_spool_id_sensor) | int(0) %}
                 {% set weight = states('sensor.spoolman_spool_' ~ spool_id ~ '_used_weight') | float(0) %}
                 {% set energy = states(energy_monitor) | float(0) %}
-                {% set fname = state_attr(printer_filename_sensor, 'filename') %}
-                {% set clean_fname = (fname if fname not in [None, '', 'unknown', 'None'] else '3D Print') | string | truncate(50, true, '') %}
+                
+                {# Safely grab the filename by checking both the sensor state and its attributes #}
+                {% set f_state = states(printer_filename_sensor) %}
+                {% set f_attr = state_attr(printer_filename_sensor, 'filename') %}
+                {% set fname = f_state if f_state not in [None, '', 'unknown', 'unavailable'] else f_attr %}
+                
+                {% set clean_fname = (fname if fname not in [None, '', 'unknown', 'unavailable'] else 'Unknown Print') | string | truncate(50, true, '') %}
                 {{ {
                   "e": energy,
                   "w": weight,
@@ -148,7 +155,7 @@ action:
               start_kwh: "{{ snapshot.get('e', 0) | float(0) }}"
               start_weight: "{{ snapshot.get('w', 0) | float(0) }}"
               start_timestamp: "{{ snapshot.get('t', now().isoformat()) }}"
-              print_name: "{{ snapshot.get('f', '3D Print') }}"
+              print_name: "{{ snapshot.get('f', 'Unknown Print') }}"
 
               # --- ENERGY MATH ---
               end_kwh: "{{ states(energy_monitor) | float(0) }}"
